@@ -1,6 +1,6 @@
 # Nova Sonic Server App
 
-Backend server for Nova Sonic with AWS Lambda functions and DynamoDB integration, deployed using Terraform.
+Backend server for Nova Sonic with AWS Lambda functions, DynamoDB integration, and Nova Sonic voice assistant, deployed using Terraform.
 
 ## 🚀 Características
 
@@ -20,6 +20,12 @@ Backend server for Nova Sonic with AWS Lambda functions and DynamoDB integration
 - **Modular Design**: Configuración organizada en archivos separados
 - **Environment Variables**: Configuración flexible por stage
 
+### Nova Sonic Voice Assistant
+- **Voice Interaction**: Asistente de voz para gestión de pedidos y citas
+- **Tool Integration**: 7 herramientas para operaciones CRUD
+- **Real-time Audio**: Streaming bidireccional con AWS Bedrock
+- **Local Development**: Ejecución local para desarrollo y testing
+
 ## 🛠️ Tecnologías Utilizadas
 
 - **AWS Lambda** - Serverless functions
@@ -29,6 +35,9 @@ Backend server for Nova Sonic with AWS Lambda functions and DynamoDB integration
 - **Terraform** - Infrastructure as Code
 - **TypeScript** - Tipado estático
 - **AWS SDK v3** - Cliente de DynamoDB
+- **AWS Bedrock** - Modelo Nova Sonic para procesamiento de voz
+- **Python** - Nova Sonic voice assistant
+- **PyAudio** - Procesamiento de audio
 
 ## 📦 Instalación
 
@@ -79,6 +88,13 @@ nova-sonic-server-app/
 │   └── terraform.tfvars.example # Ejemplo de variables
 ├── scripts/
 │   └── seed-data.js           # Script para poblar datos
+├── nova_sonic/                # Nova Sonic Voice Assistant
+│   ├── nova_sonic_client.py   # Cliente principal
+│   ├── tool_processor.py      # Procesador de herramientas
+│   ├── main.py               # Punto de entrada
+│   ├── test_tools.py         # Script de pruebas
+│   ├── requirements.txt      # Dependencias Python
+│   └── README.md             # Documentación Nova Sonic
 └── dist/                      # Código compilado
 ```
 
@@ -314,11 +330,65 @@ Configurado para permitir requests desde el frontend:
    terraform -chdir=terraform output api_gateway_url
    ```
 
+## 🎤 Nova Sonic Voice Assistant
+
+### Instalación y Configuración
+
+1. **Instalar dependencias Python**
+   ```bash
+   cd nova_sonic
+   pip install -r requirements.txt
+   ```
+
+2. **Configurar credenciales AWS**
+   ```bash
+   export AWS_ACCESS_KEY_ID="tu_access_key"
+   export AWS_SECRET_ACCESS_KEY="tu_secret_key"
+   export AWS_DEFAULT_REGION="us-east-1"
+   ```
+
+3. **Probar herramientas**
+   ```bash
+   python test_tools.py
+   ```
+
+4. **Ejecutar Nova Sonic**
+   ```bash
+   python main.py
+   ```
+
+### Herramientas Disponibles
+
+#### 📦 Gestión de Pedidos
+- **consultarOrder**: Consultar pedido por ID
+- **cancelarOrder**: Cancelar pedido existente
+- **crearOrder**: Crear nuevo pedido
+
+#### 🏥 Gestión de Citas
+- **agendarTurno**: Programar nueva cita
+- **cancelarTurno**: Cancelar cita existente
+- **modificarTurno**: Cambiar fecha/hora de cita
+- **consultarTurno**: Obtener detalles de cita
+
+### Ejemplos de Comandos de Voz
+- *"Consulta el pedido número 1"*
+- *"Cancela el pedido número 2"*
+- *"Agenda una cita para mañana a las 10"*
+- *"Modifica la cita número 3 para el viernes"*
+
+### Integración con Backend
+Nova Sonic se conecta directamente a las tablas DynamoDB del backend:
+- `nova-sonic-server-app-demo-orders`
+- `nova-sonic-server-app-demo-appointments`
+
+Para más detalles, consulta [nova_sonic/README.md](nova_sonic/README.md).
+
 ## 🚀 Próximos Pasos
 
 1. **WebSocket Integration**: Implementar WebSocket para chat en tiempo real
-2. **Authentication**: Agregar autenticación con Cognito
-3. **Caching**: Implementar caching con ElastiCache
-4. **Monitoring**: Agregar CloudWatch dashboards
-5. **Testing**: Implementar tests unitarios y de integración
-6. **CI/CD**: Configurar pipeline de deployment automático 
+2. **ECS Deployment**: Desplegar Nova Sonic en contenedores
+3. **Authentication**: Agregar autenticación con Cognito
+4. **Caching**: Implementar caching con ElastiCache
+5. **Monitoring**: Agregar CloudWatch dashboards
+6. **Testing**: Implementar tests unitarios y de integración
+7. **CI/CD**: Configurar pipeline de deployment automático 

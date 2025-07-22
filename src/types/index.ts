@@ -10,7 +10,7 @@ export interface OrderItem {
 }
 
 export interface Order {
-  id: string;
+  id: string; // Este campo ya es numérico en DynamoDB
   customerName: string;
   customerEmail: string;
   items: OrderItem[];
@@ -24,7 +24,7 @@ export interface Order {
 
 // Appointment Types
 export interface Appointment {
-  id: string;
+  id: string; // Este campo ya es numérico en DynamoDB
   patientName: string;
   patientEmail: string;
   doctorName: string;
@@ -37,7 +37,7 @@ export interface Appointment {
 
 // DynamoDB Item Types
 export interface OrderItemDynamo {
-  id: string;
+  id: string; // Este campo ya es numérico en DynamoDB
   customerName: string;
   customerEmail: string;
   items: OrderItem[];
@@ -50,12 +50,12 @@ export interface OrderItemDynamo {
   // Additional DynamoDB fields
   PK: string; // partition key: ORDER#{id}
   SK: string; // sort key: ORDER#{id}
-  GSI1PK?: string; // customer email index
+  GSI1PK?: string; // customer email index (ya existe)
   GSI1SK?: string; // status + created date
 }
 
 export interface AppointmentItemDynamo {
-  id: string;
+  id: string; // Este campo ya es numérico en DynamoDB
   patientName: string;
   patientEmail: string;
   doctorName: string;
@@ -67,7 +67,7 @@ export interface AppointmentItemDynamo {
   // Additional DynamoDB fields
   PK: string; // partition key: APPOINTMENT#{id}
   SK: string; // sort key: APPOINTMENT#{id}
-  GSI1PK?: string; // patient email index
+  GSI1PK?: string; // patient email index (ya existe)
   GSI1SK?: string; // patient email
   GSI2PK?: string; // doctor name index
   GSI2SK?: string; // appointment date

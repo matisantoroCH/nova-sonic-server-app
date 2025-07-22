@@ -105,6 +105,8 @@ export const getOrderById = async (orderId: string): Promise<Order | null> => {
   }
 };
 
+
+
 export const getOrdersByCustomerEmail = async (customerEmail: string): Promise<Order[]> => {
   try {
     const command = new QueryCommand({
@@ -208,6 +210,8 @@ export const getAppointmentById = async (appointmentId: string): Promise<Appoint
     throw error;
   }
 };
+
+
 
 export const getAppointmentsByDate = async (date: string): Promise<Appointment[]> => {
   try {

@@ -51,6 +51,7 @@ export const getAppointmentById = async (event: APIGatewayProxyEvent): Promise<A
       return createResponse(400, errorResponse);
     }
 
+    // El campo id ya es numérico, así que podemos usarlo directamente
     const appointment = await getAppointmentFromDB(appointmentId);
     
     if (!appointment) {

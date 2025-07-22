@@ -43,6 +43,7 @@ export const getOrderById = async (event: APIGatewayProxyEvent): Promise<APIGate
       return createResponse(400, errorResponse);
     }
 
+    // El campo id ya es numérico, así que podemos usarlo directamente
     const order = await getOrderFromDB(orderId);
     
     if (!order) {
