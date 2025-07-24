@@ -111,17 +111,29 @@ class S2sSessionManager:
 
             # Close session
             if "sessionEnd" in event_data["event"]:
-                self.close()
+                print("Session end detected, closing stream gracefully...")
+                # Don't call close() here as it will be called by _process_responses
+                # Just mark as inactive to stop processing
+                self.is_active = False
             
         except Exception as e:
             debug_print(f"Error sending event: {str(e)}")
     
     async def _process_audio_input(self):
         """Process audio input from the queue and send to Bedrock."""
+        consecutive_audio_errors = 0
+        max_audio_errors = 5
+        
         while self.is_active:
             try:
-                # Get audio data from the queue
-                data = await self.audio_input_queue.get()
+                # Get audio data from the queue with timeout
+                try:
+                    data = await asyncio.wait_for(self.audio_input_queue.get(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    # No audio data for 5 seconds, check if still active
+                    if not self.is_active:
+                        break
+                    continue
                 
                 # Extract data from the queue item
                 prompt_name = data.get('prompt_name')
@@ -138,13 +150,25 @@ class S2sSessionManager:
                 # Send the event
                 await self.send_raw_event(audio_event)
                 
+                # Reset error counter on successful send
+                consecutive_audio_errors = 0
+                
             except asyncio.CancelledError:
+                print("Audio processing task cancelled")
                 break
             except Exception as e:
-                debug_print(f"Error processing audio: {e}")
+                consecutive_audio_errors += 1
+                print(f"Error processing audio (attempt {consecutive_audio_errors}/{max_audio_errors}): {e}")
+                
+                if consecutive_audio_errors >= max_audio_errors:
+                    print(f"Too many audio processing errors ({consecutive_audio_errors}), stopping audio processing")
+                    break
+                
                 if DEBUG:
                     import traceback
                     traceback.print_exc()
+        
+        print("Audio processing loop ended")
     
     def add_audio_chunk(self, prompt_name, content_name, audio_data):
         """Add an audio chunk to the queue."""
@@ -157,10 +181,32 @@ class S2sSessionManager:
     
     async def _process_responses(self):
         """Process incoming responses from Bedrock."""
+        consecutive_errors = 0
+        max_consecutive_errors = 3
+        retry_delay = 1.0  # Start with 1 second delay
+        last_response_time = time.time()
+        max_no_response_time = 30.0  # 30 seconds without response
+        
         while self.is_active:
-            try:            
+            try:
+                # Check for stuck stream (no response for too long)
+                current_time = time.time()
+                if current_time - last_response_time > max_no_response_time:
+                    print(f"No response from Bedrock for {max_no_response_time}s, stream may be stuck")
+                    print("Breaking connection to allow reconnection")
+                    break
+                
+                if not self.stream:
+                    print("Stream is None, breaking")
+                    break
+                    
                 output = await self.stream.await_output()
                 result = await output[1].receive()
+                
+                # Reset error counter and retry delay on successful response
+                consecutive_errors = 0
+                retry_delay = 1.0  # Reset delay
+                last_response_time = time.time()  # Update last response time
                 
                 if result.value and result.value.bytes_:
                     response_data = result.value.bytes_.decode('utf-8')
@@ -197,7 +243,7 @@ class S2sSessionManager:
                                 content_json_string = toolResult
 
                             tool_result_event = S2sEvent.text_input_tool(prompt_name, toolContent, content_json_string)
-                            print("Tool result", tool_result_event)
+                            #print("Tool result", tool_result_event)
                             await self.send_raw_event(tool_result_event)
 
                             # Send tool content end event
@@ -216,24 +262,52 @@ class S2sSessionManager:
                 print(f"Stream ended: {ex}")
                 break
             except Exception as e:
-                # Handle specific AWS CRT errors
-                if "CANCELLED" in str(e) or "AWS_ERROR_UNKNOWN" in str(e):
-                    print(f"AWS CRT error (likely connection closed): {e}")
+                # Handle specific AWS CRT errors and connection issues
+                error_str = str(e)
+                consecutive_errors += 1
+                
+                if any(keyword in error_str for keyword in ["CANCELLED", "AWS_ERROR_UNKNOWN", "InvalidStateError", "Future", "cancelled"]):
+                    print(f"AWS CRT error (connection closed or cancelled): {e}")
+                    # This is normal when ending session, don't treat as error
                     break
-                elif "ValidationException" in str(e):
+                elif "Checksum mismatch" in error_str:
+                    print(f"Checksum mismatch error (data corruption): {e}")
+                    if consecutive_errors >= max_consecutive_errors:
+                        print(f"Too many consecutive errors ({consecutive_errors}), breaking connection")
+                        break
+                    print("This is usually a temporary network issue. Continuing...")
+                    continue  # Try to continue instead of breaking
+                elif "ValidationException" in error_str:
                     error_message = str(e)
                     print(f"Validation error: {error_message}")
                     break
+                elif any(keyword in error_str.lower() for keyword in ["unexpected error during processing", "internal server error", "service unavailable", "throttling"]):
+                    print(f"AWS Bedrock service error: {e}")
+                    if consecutive_errors >= max_consecutive_errors:
+                        print(f"Too many consecutive errors ({consecutive_errors}), breaking connection")
+                        break
+                    print(f"This is an AWS service error. Waiting {retry_delay}s before retrying...")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 10.0)  # Exponential backoff, max 10s
+                    continue  # Try to continue for AWS service errors
+                elif "StopAsyncIteration" in error_str or "stream ended" in error_str.lower():
+                    print(f"Stream ended normally: {e}")
+                    break
                 else:
                     print(f"Error receiving response: {e}")
-                    break
+                    if consecutive_errors >= max_consecutive_errors:
+                        print(f"Too many consecutive errors ({consecutive_errors}), breaking connection")
+                        break
+                    print("This may cause Audio Input to continue without response. Continuing...")
+                    continue  # Try to continue for other errors
 
         self.is_active = False
-        self.close()
+        print("Response processing loop ended")
+        await self.close()
 
     async def processToolUse(self, toolName, toolUseContent):
         """Return the tool result using Carlos's tool processor"""
-        print(f"Tool Use Content: {toolUseContent}")
+        #print(f"Tool Use Content: {toolUseContent}")
 
         try:
             # Extract the tool content
@@ -247,7 +321,7 @@ class S2sSessionManager:
 
             return {"result": result}
         except Exception as ex:
-            print(ex)
+            print(f"Error in processToolUse: {ex}")
             return {"result": "An error occurred while attempting to retrieve information related to the toolUse event."}
     
     async def close(self):
@@ -264,6 +338,8 @@ class S2sSessionManager:
                 await self.response_task
             except asyncio.CancelledError:
                 pass
+            except Exception as e:
+                print(f"Error waiting for response task: {e}")
         
         # Close stream if it exists
         if self.stream:
@@ -272,15 +348,28 @@ class S2sSessionManager:
             except Exception as e:
                 print(f"Error closing stream: {e}")
         
-        # Clear queues
-        while not self.audio_input_queue.empty():
-            try:
-                self.audio_input_queue.get_nowait()
-            except:
-                pass
+        # Clear queues safely
+        try:
+            while not self.audio_input_queue.empty():
+                try:
+                    self.audio_input_queue.get_nowait()
+                except:
+                    pass
+        except Exception as e:
+            print(f"Error clearing audio queue: {e}")
+            
+        try:
+            while not self.output_queue.empty():
+                try:
+                    self.output_queue.get_nowait()
+                except:
+                    pass
+        except Exception as e:
+            print(f"Error clearing output queue: {e}")
         
-        while not self.output_queue.empty():
-            try:
-                self.output_queue.get_nowait()
-            except:
-                pass 
+        # Reset state
+        self.stream = None
+        self.bedrock_client = None
+        self.toolUseContent = ""
+        self.toolUseId = ""
+        self.toolName = "" 
