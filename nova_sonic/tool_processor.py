@@ -8,6 +8,17 @@ from decimal import Decimal
 import uuid
 import pytz
 
+def convert_decimals(obj):
+    """Convert Decimal objects to float/int for JSON serialization"""
+    if isinstance(obj, Decimal):
+        return float(obj) if obj % 1 != 0 else int(obj)
+    elif isinstance(obj, dict):
+        return {key: convert_decimals(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_decimals(item) for item in obj]
+    else:
+        return obj
+
 class NovaSonicToolProcessor:
     """Tool processor for Nova Sonic integration with orders and appointments"""
     
@@ -81,7 +92,8 @@ class NovaSonicToolProcessor:
     async def _consultar_pedido(self, content: Dict[str, Any]) -> Dict[str, Any]:
         """Consultar un pedido por ID"""
         try:
-            order_id = content.get("orderId")
+            # Handle both orderId and order_id formats
+            order_id = content.get("orderId") or content.get("order_id")
             if not order_id:
                 return {"error": "Se requiere el ID del pedido"}
             
@@ -94,7 +106,7 @@ class NovaSonicToolProcessor:
             
             return {
                 "success": True,
-                "order": {
+                "order": convert_decimals({
                     "id": item.get("id"),
                     "customerName": item.get("customerName"),
                     "customerEmail": item.get("customerEmail"),
@@ -104,7 +116,7 @@ class NovaSonicToolProcessor:
                     "estimatedDelivery": item.get("estimatedDelivery"),
                     "trackingNumber": item.get("trackingNumber"),
                     "items": item.get("items", [])
-                }
+                })
             }
         except Exception as e:
             return {"error": f"Error consultando pedido: {str(e)}"}
@@ -112,7 +124,8 @@ class NovaSonicToolProcessor:
     async def _cancelar_pedido(self, content: Dict[str, Any]) -> Dict[str, Any]:
         """Cancelar un pedido"""
         try:
-            order_id = content.get("orderId")
+            # Handle both orderId and order_id formats
+            order_id = content.get("orderId") or content.get("order_id")
             if not order_id:
                 return {"error": "Se requiere el ID del pedido"}
 
@@ -257,7 +270,8 @@ class NovaSonicToolProcessor:
     async def _cancelar_turno(self, content: Dict[str, Any]) -> Dict[str, Any]:
         """Cancelar un turno/cita"""
         try:
-            appointment_id = content.get("appointmentId")
+            # Handle both appointmentId and appointment_id formats
+            appointment_id = content.get("appointmentId") or content.get("appointment_id")
             if not appointment_id:
                 return {"error": "Se requiere el ID de la cita"}
             
@@ -344,7 +358,8 @@ class NovaSonicToolProcessor:
     async def _consultar_turno(self, content: Dict[str, Any]) -> Dict[str, Any]:
         """Consultar un turno/cita"""
         try:
-            appointment_id = content.get("appointmentId")
+            # Handle both appointmentId and appointment_id formats
+            appointment_id = content.get("appointmentId") or content.get("appointment_id")
             if not appointment_id:
                 return {"error": "Se requiere el ID de la cita"}
             
@@ -357,7 +372,7 @@ class NovaSonicToolProcessor:
             
             return {
                 "success": True,
-                "appointment": {
+                "appointment": convert_decimals({
                     "id": item.get("id"),
                     "patientName": item.get("patientName"),
                     "patientEmail": item.get("patientEmail"),
@@ -367,7 +382,7 @@ class NovaSonicToolProcessor:
                     "type": item.get("type"),
                     "duration": item.get("duration"),
                     "notes": item.get("notes")
-                }
+                })
             }
         except Exception as e:
             return {"error": f"Error consultando cita: {str(e)}"} 

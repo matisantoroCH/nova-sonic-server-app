@@ -171,15 +171,13 @@ class S2sSessionManager:
                     event_name = None
                     if 'event' in json_data:
                         event_name = list(json_data["event"].keys())[0]
-                        # if event_name == "audioOutput":
-                        #     print(json_data)
                         
                         # Handle tool use detection
                         if event_name == 'toolUse':
                             self.toolUseContent = json_data['event']['toolUse']
                             self.toolName = json_data['event']['toolUse']['toolName']
                             self.toolUseId = json_data['event']['toolUse']['toolUseId']
-                            debug_print(f"Tool use detected: {self.toolName}, ID: {self.toolUseId}, "+ json.dumps(json_data['event']))
+                            debug_print(f"Tool use detected: {self.toolName}, ID: {self.toolUseId}")
 
                         # Process tool use when content ends
                         elif event_name == 'contentEnd' and json_data['event'][event_name].get('type') == 'TOOL':
@@ -206,24 +204,29 @@ class S2sSessionManager:
                             tool_content_end_event = S2sEvent.content_end(prompt_name, toolContent)
                             await self.send_raw_event(tool_content_end_event)
                     
-                    # Put the response in the output queue for forwarding to the frontend
+                    # Forward all events to the frontend (frontend handles display logic)
                     await self.output_queue.put(json_data)
 
 
             except json.JSONDecodeError as ex:
-                print(ex)
-                await self.output_queue.put({"raw_data": response_data})
+                print(f"JSON decode error: {ex}")
+                continue
             except StopAsyncIteration as ex:
                 # Stream has ended
-                print(ex)
+                print(f"Stream ended: {ex}")
+                break
             except Exception as e:
-                # Handle ValidationException properly
-                if "ValidationException" in str(e):
+                # Handle specific AWS CRT errors
+                if "CANCELLED" in str(e) or "AWS_ERROR_UNKNOWN" in str(e):
+                    print(f"AWS CRT error (likely connection closed): {e}")
+                    break
+                elif "ValidationException" in str(e):
                     error_message = str(e)
                     print(f"Validation error: {error_message}")
+                    break
                 else:
                     print(f"Error receiving response: {e}")
-                break
+                    break
 
         self.is_active = False
         self.close()
@@ -254,12 +257,30 @@ class S2sSessionManager:
             
         self.is_active = False
         
-        if self.stream:
-            await self.stream.input_stream.close()
-        
+        # Cancel all pending tasks
         if self.response_task and not self.response_task.done():
             self.response_task.cancel()
             try:
                 await self.response_task
             except asyncio.CancelledError:
+                pass
+        
+        # Close stream if it exists
+        if self.stream:
+            try:
+                await self.stream.input_stream.close()
+            except Exception as e:
+                print(f"Error closing stream: {e}")
+        
+        # Clear queues
+        while not self.audio_input_queue.empty():
+            try:
+                self.audio_input_queue.get_nowait()
+            except:
+                pass
+        
+        while not self.output_queue.empty():
+            try:
+                self.output_queue.get_nowait()
+            except:
                 pass 

@@ -31,6 +31,7 @@ async def websocket_handler(websocket):
         aws_region = "us-east-1"
 
     stream_manager = None
+    forward_task = None
     try:
         async for message in websocket:
             try:
@@ -85,9 +86,17 @@ async def websocket_handler(websocket):
     except websockets.exceptions.ConnectionClosed:
         print("WebSocket connection closed")
     finally:
-        # Clean up
+        # Clean up tasks and connections
+        if forward_task and not forward_task.done():
+            forward_task.cancel()
+            try:
+                await forward_task
+            except asyncio.CancelledError:
+                pass
+        
         if stream_manager:
             await stream_manager.close()
+        
         if websocket:
             websocket.close()
 
@@ -97,7 +106,10 @@ async def forward_responses(websocket, stream_manager):
     try:
         while True:
             # Get next response from the output queue
-            response = await stream_manager.output_queue.get()
+            try:
+                response = await stream_manager.output_queue.get()
+            except asyncio.CancelledError:
+                break
             
             # Send to WebSocket
             try:
@@ -105,15 +117,21 @@ async def forward_responses(websocket, stream_manager):
                 await websocket.send(event)
             except websockets.exceptions.ConnectionClosed:
                 break
+            except Exception as e:
+                print(f"Error sending to WebSocket: {e}")
+                break
     except asyncio.CancelledError:
         # Task was cancelled
         pass
     except Exception as e:
         print(f"Error forwarding responses: {e}")
-        # Close connection
-        websocket.close()
-        if stream_manager:
-            await stream_manager.close()
+    finally:
+        # Ensure cleanup
+        try:
+            if websocket and not websocket.closed:
+                websocket.close()
+        except:
+            pass
 
 
 class HealthCheckHandler(http.server.BaseHTTPRequestHandler):
