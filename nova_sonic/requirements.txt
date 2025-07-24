@@ -1,7 +1,11 @@
-boto3>=1.34.0
-pyaudio>=0.2.14
-pytz>=2025.1
-aws-sdk-bedrock-runtime==0.0.2
-smithy-aws-core==0.0.3
-smithy-core>=0.0.1
-websockets>=12.0 
+# AWS SDK for Bedrock Runtime
+aws_sdk_bedrock_runtime
+
+# AWS SDK for Python (Boto3)
+boto3==1.38.2
+
+# WebSocket support
+websockets==15.0.1
+
+# Timezone support
+pytz==2024.1
