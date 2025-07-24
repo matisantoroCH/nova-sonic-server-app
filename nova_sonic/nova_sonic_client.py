@@ -51,9 +51,15 @@ class NovaSonicClient:
         self.last_user_text = None
         self.last_assistant_text = None
         self._printed_hashes = set()
+        
+        # WebSocket callback for sending transcriptions
+        self.websocket_callback = None
 
     def _initialize_client(self):
         """Initialize the Bedrock client with boto3 credential chain"""
+        print(f"🔧 Inicializando cliente Bedrock en región: {self.region}")
+        print(f"🔧 Modelo: {self.model_id}")
+        
         # Use environment credentials resolver
         credentials_resolver = EnvironmentCredentialsResolver()
 
@@ -65,6 +71,7 @@ class NovaSonicClient:
             http_auth_schemes={"aws.auth#sigv4": SigV4AuthScheme()}
         )
         self.bedrock_client = BedrockRuntimeClient(config=config)
+        print(f"✅ Cliente Bedrock inicializado correctamente")
 
     async def initialize_stream(self):
         """Initialize the bidirectional stream with Bedrock"""
@@ -72,18 +79,27 @@ class NovaSonicClient:
             self._initialize_client()
         
         try:
+            print(f"🔄 Inicializando stream bidireccional con Bedrock...")
             self.stream = await self.bedrock_client.invoke_model_with_bidirectional_stream(
                 InvokeModelWithBidirectionalStreamOperationInput(model_id=self.model_id)
             )
             self.is_active = True
+            print(f"✅ Stream bidireccional inicializado correctamente")
             
             # Send initialization events in the correct order (following nova_sonic.py)
+            print("🔄 Enviando eventos de inicialización...")
             await self._send_event(self._session_start_event())
+            print("✅ Session start enviado")
             await self._send_event(self._prompt_start_event())
+            print("✅ Prompt start enviado")
             await self._send_event(self._content_start_event())
+            print("✅ Content start enviado")
             await self._send_event(self._system_prompt_event())
+            print("✅ System prompt enviado")
             await self._send_event(self._content_end_event())
-            await self._send_event(self._audio_content_start_event())
+            print("✅ Content end enviado")
+            # No enviamos audio_content_start aquí - lo enviará el frontend cuando inicie la grabación
+            print("✅ Inicialización completa - listo para recibir audio del frontend")
             
             # Start processing responses
             asyncio.create_task(self._process_responses())
@@ -99,7 +115,10 @@ class NovaSonicClient:
     async def _send_event(self, event_json):
         """Send an event to the Bedrock stream"""
         if not self.stream or not self.is_active:
+            print(f"⚠️ No se puede enviar evento - stream: {self.stream is not None}, activo: {self.is_active}")
             return
+        
+        print(f"🔍 Enviando evento a Bedrock: {event_json[:200]}...")
         
         event = InvokeModelWithBidirectionalStreamInputChunk(
             value=BidirectionalInputPayloadPart(bytes_=event_json.encode('utf-8'))
@@ -107,8 +126,11 @@ class NovaSonicClient:
         
         try:
             await self.stream.input_stream.send(event)
+            print(f"✅ Evento enviado exitosamente")
         except Exception as e:
-            print(f"Error enviando evento: {str(e)}")
+            print(f"❌ Error enviando evento: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
     def _session_start_event(self):
         """Create session start event"""
@@ -432,19 +454,23 @@ class NovaSonicClient:
             }
         })
 
-    async def _send_audio_chunk(self, audio_bytes: bytes):
+    async def _send_audio_chunk(self, audio_base64: str):
         """Send audio chunk to the stream"""
-        blob = base64.b64encode(audio_bytes)
+        print(f"🎵 Enviando chunk de audio a Nova Sonic: {len(audio_base64)} caracteres base64")
+        
+        # El audio ya viene en base64 desde el frontend, no necesitamos codificarlo de nuevo
         audio_event = json.dumps({
             "event": {
                 "audioInput": {
                     "promptName": self.prompt_name,
                     "contentName": self.audio_content_name,
-                    "content": blob.decode('utf-8')
+                    "content": audio_base64
                 }
             }
         })
+        print(f"🎵 Evento de audio preparado, enviando...")
         await self._send_event(audio_event)
+        print(f"🎵 Chunk de audio enviado exitosamente")
 
     async def _process_responses(self):
         """Process responses from the stream"""
@@ -453,50 +479,99 @@ class NovaSonicClient:
                 print("❌ No hay stream de respuesta disponible")
                 return
                 
+            print("🔄 Iniciando procesamiento de respuestas de Nova Sonic...")
             while self.is_active:
                 try:
+                    print("⏳ Esperando respuesta de Nova Sonic...")
                     output = await self.stream.await_output()
                     result = await output[1].receive()
+                    print(f"🔄 Result: {result}")
                     if result.value and result.value.bytes_:
                         response_data = result.value.bytes_.decode('utf-8')
-                        json_data = json.loads(response_data)
-                        if 'event' in json_data:
-                            if 'toolUse' in json_data['event']:
-                                tool_use = json_data['event']['toolUse']
-                                tool_name = tool_use['toolName']
-                                tool_use_id = tool_use['toolUseId']
-                                asyncio.create_task(self._handle_tool(tool_name, tool_use, tool_use_id))
-                            if 'textOutput' in json_data['event']:
-                                text = json_data['event']['textOutput']['content']
-                                role = json_data['event']['textOutput']['role']
-                                if text.strip() == '{ "interrupted" : true }' or '{ "interrupted" : true }' in text:
-                                    continue
-                                text_hash = hash((role, text.strip()))
-                                if text_hash in self._printed_hashes:
-                                    continue
-                                self._printed_hashes.add(text_hash)
-                                if role == "ASSISTANT":
-                                    self.last_assistant_text = text
-                                    self.conversation_history.append({"role": "assistant", "content": text})
-                                    print(f"[{role}] {text}")
-                                elif role == "USER":
-                                    self.last_user_text = text
-                                    self.conversation_history.append({"role": "user", "content": text})
-                                    print(f"[{role}] {text}")
-                            if 'audioOutput' in json_data['event']:
-                                audio_content = json_data['event']['audioOutput']['content']
-                                audio_bytes = base64.b64decode(audio_content)
-                                await self.audio_output_queue.put(audio_bytes)
+                        print(f"📨 Respuesta recibida de Nova Sonic: {response_data[:100]}...")
+                        
+                        try:
+                            json_data = json.loads(response_data)
+                            if 'event' in json_data:
+                                if 'toolUse' in json_data['event']:
+                                    tool_use = json_data['event']['toolUse']
+                                    tool_name = tool_use['toolName']
+                                    tool_use_id = tool_use['toolUseId']
+                                    asyncio.create_task(self._handle_tool(tool_name, tool_use, tool_use_id))
+                                if 'textOutput' in json_data['event']:
+                                    text = json_data['event']['textOutput']['content']
+                                    role = json_data['event']['textOutput']['role']
+                                    if text.strip() == '{ "interrupted" : true }' or '{ "interrupted" : true }' in text:
+                                        continue
+                                    text_hash = hash((role, text.strip()))
+                                    if text_hash in self._printed_hashes:
+                                        continue
+                                    self._printed_hashes.add(text_hash)
+                                    if role == "ASSISTANT":
+                                        self.last_assistant_text = text
+                                        self.conversation_history.append({"role": "assistant", "content": text})
+                                        print(f"[{role}] {text}")
+                                        
+                                        # Send transcription to WebSocket if callback is set
+                                        if self.websocket_callback:
+                                            print(f"📝 Enviando transcripción assistant: {text}")
+                                            asyncio.create_task(self.websocket_callback({
+                                                'type': 'transcription',
+                                                'payload': {
+                                                    'text': text,
+                                                    'role': 'assistant',
+                                                    'timestamp': asyncio.get_event_loop().time()
+                                                }
+                                            }))
+                                            
+                                    elif role == "USER":
+                                        self.last_user_text = text
+                                        self.conversation_history.append({"role": "user", "content": text})
+                                        print(f"[{role}] {text}")
+                                        
+                                        # Send transcription to WebSocket if callback is set
+                                        if self.websocket_callback:
+                                            print(f"📝 Enviando transcripción user: {text}")
+                                            asyncio.create_task(self.websocket_callback({
+                                                'type': 'transcription',
+                                                'payload': {
+                                                    'text': text,
+                                                    'role': 'user',
+                                                    'timestamp': asyncio.get_event_loop().time()
+                                                }
+                                            }))
+                                if 'audioOutput' in json_data['event']:
+                                    audio_content = json_data['event']['audioOutput']['content']
+                                    audio_bytes = base64.b64decode(audio_content)
+                                    await self.audio_output_queue.put(audio_bytes)
+                        except json.JSONDecodeError as e:
+                            print(f"❌ Error parsing JSON response: {e}")
+                            print(f"📄 Raw response: {response_data}")
+                            continue
                                 
                 except StopAsyncIteration:
                     # Stream has ended
+                    print("🛑 Stream ended")
                     break
                 except Exception as e:
-                    print(f"Error receiving response: {e}")
-                    break
+                    print(f"❌ Error receiving response: {e}")
+                    print(f"🔍 Tipo de error: {type(e).__name__}")
+                    import traceback
+                    traceback.print_exc()
+                    
+                    # Check if it's a stream error that we can recover from
+                    if "ModelStreamErrorException" in str(e):
+                        print("🔄 ModelStreamErrorException detected, attempting to recover...")
+                        # Try to continue processing
+                        await asyncio.sleep(1)
+                        continue
+                    else:
+                        break
                     
         except Exception as e:
             print(f"Error procesando respuestas: {str(e)}")
+            import traceback
+            traceback.print_exc()
         finally:
             self.is_active = False
 
@@ -528,6 +603,8 @@ class NovaSonicClient:
             tool_content = tool_use.get('content', {})
             print(f"🔧 Debug - Tool: {tool_name}, Content: {tool_content}")
             result = await self.tool_processor.process_tool_async(tool_name, tool_content)
+            
+            # Send tool result as JSON string
             await self._send_event(json.dumps({
                 "event": {
                     "toolResult": {
@@ -553,6 +630,8 @@ class NovaSonicClient:
             
         except Exception as e:
             print(f"Error manejando herramienta {tool_name}: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
     def add_audio_chunk(self, audio_bytes: bytes):
         """Add audio chunk to the input queue"""
@@ -574,49 +653,25 @@ class NovaSonicClient:
             except Exception as e:
                 pass  # Silently ignore other errors
 
-    async def capture_audio(self):
-        """Capture audio from microphone"""
+    async def process_audio_from_frontend(self, audio_base64: str):
+        """Process audio chunk received from frontend via WebSocket"""
+        if not self.is_active:
+            print("⚠️ Nova Sonic client not active")
+            return
+            
         try:
-            # Initialize PyAudio
-            self.p = pyaudio.PyAudio()
-            
-            # Open input stream
-            self.input_stream = self.p.open(
-                format=FORMAT,
-                channels=CHANNELS,
-                rate=INPUT_SAMPLE_RATE,
-                input=True,
-                frames_per_buffer=CHUNK_SIZE
-            )
-            
-            # Open output stream
-            self.output_stream = self.p.open(
-                format=FORMAT,
-                channels=CHANNELS,
-                rate=OUTPUT_SAMPLE_RATE,
-                output=True,
-                frames_per_buffer=CHUNK_SIZE
-            )
-            
-            print("🎤 Sesión de audio iniciada. Habla ahora...")
-            
-            while self.is_active:
-                audio_data = self.input_stream.read(CHUNK_SIZE, exception_on_overflow=False)
-                await self._send_audio_chunk(audio_data)
-                await asyncio.sleep(0.01)  # Add delay like in the example
-                
+            await self._send_audio_chunk(audio_base64)
         except Exception as e:
-            print(f"Error capturing audio: {e}")
-        finally:
-            if self.input_stream:
-                self.input_stream.stop_stream()
-                self.input_stream.close()
-            if self.output_stream:
-                self.output_stream.stop_stream()
-                self.output_stream.close()
-            if self.p:
-                self.p.terminate()
-            await self._send_event(self._audio_content_end_event())
+            print(f"❌ Error processing audio from frontend: {str(e)}")
+            import traceback
+            traceback.print_exc()
+
+    async def capture_audio(self):
+        """Capture audio from microphone - NOT USED, audio comes from frontend via WebSocket"""
+        print("🎤 Audio capture not used - audio comes from frontend via WebSocket")
+        # This method is not used in the WebSocket implementation
+        # Audio comes from the frontend through WebSocket messages
+        pass
 
     async def play_output_audio(self):
         """Play output audio from queue"""
