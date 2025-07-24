@@ -30,7 +30,7 @@ if __name__ == "__main__":
         asyncio.run(main(
             host=os.getenv("HOST"),
             port=int(os.getenv("WS_PORT")),
-            health_port=int(os.getenv("WS_PORT"))
+            health_port=int(os.getenv("HEALTH_PORT"))
         ))
     except KeyboardInterrupt:
         print("\n🛑 Server stopped by user")
