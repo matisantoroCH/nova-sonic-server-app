@@ -230,7 +230,7 @@ class S2sSessionManager:
                 retry_delay = 0.5  # Reset delay (faster for user)
                 self.last_response_time = time.time()  # Update last response time
                 self.is_processing_response = True  # Mark that we're processing a response
-                print(f"✅ Response received from Bedrock at {time.strftime('%H:%M:%S')}")
+                #print(f"✅ Response received from Bedrock at {time.strftime('%H:%M:%S')}")
                 
                 if result.value and result.value.bytes_:
                     response_data = result.value.bytes_.decode('utf-8')
@@ -267,34 +267,44 @@ class S2sSessionManager:
                                 content_json_string = toolResult
 
                             tool_result_event = S2sEvent.text_input_tool(prompt_name, toolContent, content_json_string)
-                            #print("Tool result", tool_result_event)
+                            print("Tool result", tool_result_event)
                             await self.send_raw_event(tool_result_event)
 
                             # Send tool content end event
                             tool_content_end_event = S2sEvent.content_end(prompt_name, toolContent)
                             await self.send_raw_event(tool_content_end_event)
+                            print("🔄 Tool execution completed, waiting for Nova's response...")
                     
                     # Forward all events to the frontend (frontend handles display logic)
                     await self.output_queue.put(json_data)
                     print(f"📤 Event sent to frontend: {event_name}")
                     
+                    # Log specific events for debugging
+                    if event_name == 'textOutput':
+                        print(f"📝 Text output received: {json_data['event']['textOutput'].get('content', '')[:100]}...")
+                    elif event_name == 'audioOutput':
+                        print(f"🔊 Audio output received: {len(json_data['event']['audioOutput'].get('content', ''))} bytes")
+                    
                     # Reset processing flag for certain events that indicate completion
-                    if event_name in ['contentEnd', 'audioOutput', 'textOutput']:
+                    # Don't reset for contentEnd of type TOOL, as Nova needs to continue processing
+                    if event_name == 'contentEnd' and json_data['event'][event_name].get('type') == 'TOOL':
+                        print(f"🔄 Tool content ended, but keeping processing active for Nova's response")
+                    elif event_name in ['contentEnd', 'audioOutput', 'textOutput']:
                         self.is_processing_response = False
-                        print(f"🔄 Response processing completed for: {event_name}")
+                        #print(f"🔄 Response processing completed for: {event_name}")
                         
                         # If we get a textOutput, consider it a valid response even if speculative
-                        if event_name == 'textOutput':
-                            print(f"📝 Text output received, marking response as complete")
-                            print(f"✅ Ready for next audio input")
+                        #if event_name == 'textOutput':
+                        #    print(f"📝 Text output received, marking response as complete")
+                        #    print(f"✅ Ready for next audio input")
                         
                         # If we get contentEnd, it means the current prompt is complete
-                        if event_name == 'contentEnd':
-                            print(f"📋 Content ended, ready for new prompt")
+                        #if event_name == 'contentEnd':
+                        #    print(f"📋 Content ended, ready for new prompt")
                         
                         # If we get audioOutput, it means Nova finished speaking
-                        if event_name == 'audioOutput':
-                            print(f"🔊 Audio output completed, ready for next input")
+                        #if event_name == 'audioOutput':
+                        #    print(f"🔊 Audio output completed, ready for next input")
 
 
             except json.JSONDecodeError as ex:
