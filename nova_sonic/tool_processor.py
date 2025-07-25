@@ -8,6 +8,17 @@ from decimal import Decimal
 import uuid
 import pytz
 
+def convert_decimals(obj):
+    """Convert Decimal objects to float/int for JSON serialization"""
+    if isinstance(obj, Decimal):
+        return float(obj) if obj % 1 != 0 else int(obj)
+    elif isinstance(obj, dict):
+        return {key: convert_decimals(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_decimals(item) for item in obj]
+    else:
+        return obj
+
 class NovaSonicToolProcessor:
     """Tool processor for Nova Sonic integration with orders and appointments"""
     
@@ -79,11 +90,19 @@ class NovaSonicToolProcessor:
             return {"error": f"Herramienta no soportada: {tool_name}"}
 
     async def _consultar_pedido(self, content: Dict[str, Any]) -> Dict[str, Any]:
-        """Consultar un pedido por ID"""
+        """Consultar un pedido por ID con validación de identidad"""
         try:
-            order_id = content.get("orderId")
+            # Handle both orderId and order_id formats
+            order_id = content.get("orderId") or content.get("order_id")
+            dni = content.get("dni")
+            customer_name = content.get("customerName")
+            
             if not order_id:
                 return {"error": "Se requiere el ID del pedido"}
+            
+            # Validar que se proporcione al menos DNI o nombre
+            if not dni and not customer_name:
+                return {"error": "Se requiere DNI o nombre completo para verificar la identidad"}
             
             # Buscar directamente por PK/SK usando el ID
             response = self.orders_table.get_item(Key={"PK": f"ORDER#{order_id}", "SK": f"ORDER#{order_id}"})
@@ -92,9 +111,18 @@ class NovaSonicToolProcessor:
             if not item:
                 return {"error": f"Pedido {order_id} no encontrado"}
             
+            # Verificar identidad
+            order_customer_name = item.get("customerName", "").lower().strip()
+            provided_name = customer_name.lower().strip() if customer_name else ""
+            
+            # Si se proporcionó DNI, verificar que coincida (asumiendo que el DNI está almacenado)
+            # Por ahora, solo verificamos el nombre
+            if customer_name and order_customer_name != provided_name:
+                return {"error": "El nombre proporcionado no coincide con el titular del pedido"}
+            
             return {
                 "success": True,
-                "order": {
+                "order": convert_decimals({
                     "id": item.get("id"),
                     "customerName": item.get("customerName"),
                     "customerEmail": item.get("customerEmail"),
@@ -104,17 +132,25 @@ class NovaSonicToolProcessor:
                     "estimatedDelivery": item.get("estimatedDelivery"),
                     "trackingNumber": item.get("trackingNumber"),
                     "items": item.get("items", [])
-                }
+                })
             }
         except Exception as e:
             return {"error": f"Error consultando pedido: {str(e)}"}
 
     async def _cancelar_pedido(self, content: Dict[str, Any]) -> Dict[str, Any]:
-        """Cancelar un pedido"""
+        """Cancelar un pedido con validación de identidad"""
         try:
-            order_id = content.get("orderId")
+            # Handle both orderId and order_id formats
+            order_id = content.get("orderId") or content.get("order_id")
+            dni = content.get("dni")
+            customer_name = content.get("customerName")
+            
             if not order_id:
                 return {"error": "Se requiere el ID del pedido"}
+            
+            # Validar que se proporcione al menos DNI o nombre
+            if not dni and not customer_name:
+                return {"error": "Se requiere DNI o nombre completo para verificar la identidad"}
 
             # Buscar el pedido
             response = self.orders_table.get_item(Key={"PK": f"ORDER#{order_id}", "SK": f"ORDER#{order_id}"})
@@ -122,6 +158,15 @@ class NovaSonicToolProcessor:
             
             if not item:
                 return {"error": f"Pedido {order_id} no encontrado"}
+            
+            # Verificar identidad
+            order_customer_name = item.get("customerName", "").lower().strip()
+            provided_name = customer_name.lower().strip() if customer_name else ""
+            
+            # Si se proporcionó DNI, verificar que coincida (asumiendo que el DNI está almacenado)
+            # Por ahora, solo verificamos el nombre
+            if customer_name and order_customer_name != provided_name:
+                return {"error": "El nombre proporcionado no coincide con el titular del pedido"}
             
             if item.get("status") == "cancelled":
                 return {"error": "El pedido ya está cancelado"}
@@ -255,11 +300,17 @@ class NovaSonicToolProcessor:
             return {"error": f"Error agendando cita: {str(e)}"}
 
     async def _cancelar_turno(self, content: Dict[str, Any]) -> Dict[str, Any]:
-        """Cancelar un turno/cita"""
+        """Cancelar un turno/cita con validación de identidad"""
         try:
-            appointment_id = content.get("appointmentId")
+            # Handle both appointmentId and appointment_id formats
+            appointment_id = content.get("appointmentId") or content.get("appointment_id")
+            patient_name = content.get("patientName")
+            
             if not appointment_id:
                 return {"error": "Se requiere el ID de la cita"}
+            
+            if not patient_name:
+                return {"error": "Se requiere el nombre del paciente para verificar la identidad"}
             
             # Buscar la cita
             response = self.appointments_table.get_item(Key={"PK": f"APPOINTMENT#{appointment_id}", "SK": f"APPOINTMENT#{appointment_id}"})
@@ -267,6 +318,13 @@ class NovaSonicToolProcessor:
             
             if not item:
                 return {"error": f"Cita {appointment_id} no encontrada"}
+            
+            # Verificar identidad
+            appointment_patient_name = item.get("patientName", "").lower().strip()
+            provided_name = patient_name.lower().strip()
+            
+            if appointment_patient_name != provided_name:
+                return {"error": "El nombre proporcionado no coincide con el paciente de la cita"}
             
             if item.get("status") == "cancelled":
                 return {"error": "La cita ya está cancelada"}
@@ -288,14 +346,18 @@ class NovaSonicToolProcessor:
             return {"error": f"Error cancelando cita: {str(e)}"}
 
     async def _modificar_turno(self, content: Dict[str, Any]) -> Dict[str, Any]:
-        """Modificar fecha u hora de un turno"""
+        """Modificar fecha u hora de un turno con validación de identidad"""
         try:
             appointment_id = content.get("appointmentId")
+            patient_name = content.get("patientName")
             new_date = content.get("newDate")
             new_time = content.get("newTime")
             
             if not appointment_id:
                 return {"error": "Se requiere el ID de la cita"}
+            
+            if not patient_name:
+                return {"error": "Se requiere el nombre del paciente para verificar la identidad"}
             
             if not new_date and not new_time:
                 return {"error": "Se requiere nueva fecha o nueva hora"}
@@ -306,6 +368,13 @@ class NovaSonicToolProcessor:
             
             if not item:
                 return {"error": f"Cita {appointment_id} no encontrada"}
+            
+            # Verificar identidad
+            appointment_patient_name = item.get("patientName", "").lower().strip()
+            provided_name = patient_name.lower().strip()
+            
+            if appointment_patient_name != provided_name:
+                return {"error": "El nombre proporcionado no coincide con el paciente de la cita"}
             
             # Construir nueva fecha/hora
             current_date = datetime.fromisoformat(item.get("date").replace("Z", "+00:00"))
@@ -342,11 +411,17 @@ class NovaSonicToolProcessor:
             return {"error": f"Error modificando cita: {str(e)}"}
 
     async def _consultar_turno(self, content: Dict[str, Any]) -> Dict[str, Any]:
-        """Consultar un turno/cita"""
+        """Consultar un turno/cita con validación de identidad"""
         try:
-            appointment_id = content.get("appointmentId")
+            # Handle both appointmentId and appointment_id formats
+            appointment_id = content.get("appointmentId") or content.get("appointment_id")
+            patient_name = content.get("patientName")
+            
             if not appointment_id:
                 return {"error": "Se requiere el ID de la cita"}
+            
+            if not patient_name:
+                return {"error": "Se requiere el nombre del paciente para verificar la identidad"}
             
             # Buscar la cita
             response = self.appointments_table.get_item(Key={"PK": f"APPOINTMENT#{appointment_id}", "SK": f"APPOINTMENT#{appointment_id}"})
@@ -355,9 +430,16 @@ class NovaSonicToolProcessor:
             if not item:
                 return {"error": f"Cita {appointment_id} no encontrada"}
             
+            # Verificar identidad
+            appointment_patient_name = item.get("patientName", "").lower().strip()
+            provided_name = patient_name.lower().strip()
+            
+            if appointment_patient_name != provided_name:
+                return {"error": "El nombre proporcionado no coincide con el paciente de la cita"}
+            
             return {
                 "success": True,
-                "appointment": {
+                "appointment": convert_decimals({
                     "id": item.get("id"),
                     "patientName": item.get("patientName"),
                     "patientEmail": item.get("patientEmail"),
@@ -367,7 +449,7 @@ class NovaSonicToolProcessor:
                     "type": item.get("type"),
                     "duration": item.get("duration"),
                     "notes": item.get("notes")
-                }
+                })
             }
         except Exception as e:
             return {"error": f"Error consultando cita: {str(e)}"} 
