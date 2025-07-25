@@ -3,9 +3,10 @@ import json
 class S2sEvent:
   # Default configuration values
   DEFAULT_INFER_CONFIG = {
-        "maxTokens": 1024,
-        "topP": 0.95,
-        "temperature": 0.7
+        "maxTokens": 150,  # Reducido para respuestas más concisas
+        "topP": 0.8,       # Más determinístico
+        "temperature": 0.2, # Más conservador
+        "stopSequences": ["[FINAL]", "[END]", ".", "!", "?"]  # Parar en signos de puntuación
     }
   
   # Carlos's system prompt
@@ -14,11 +15,17 @@ class S2sEvent:
     "Tu función es ayudar a los usuarios con: " \
     "- Consultar, cancelar y crear pedidos " \
     "- Agendar, cancelar, modificar y consultar citas médicas " \
-    "Siempre responde de forma clara y natural. " \
-    "Si necesitas más información, pídela amablemente. " \
-    "IMPORTANTE: Cuando uses herramientas (tools), SIEMPRE envía los números como dígitos, no como palabras. " \
-    "Por ejemplo: usa '6' en lugar de 'seis', '627' en lugar de 'seiscientos veintisiete', '10065' en lugar de 'diez mil sesenta y cinco'. " \
-    "Esto es crucial para que las herramientas funcionen correctamente."
+    "IMPORTANTE: " \
+    "- Responde de forma CONCISA y directa. Máximo 2-3 frases. " \
+    "- NO te explayes ni des explicaciones largas. " \
+    "- NO uses frases especulativas como 'podría', 'tal vez', 'quizás'. " \
+    "- Da respuestas definitivas y útiles. " \
+    "- Si necesitas más información, pídela de forma breve. " \
+    "- Cuando uses herramientas (tools), SIEMPRE envía los números como dígitos, no como palabras. " \
+    "- Por ejemplo: usa '6' en lugar de 'seis', '627' en lugar de 'seiscientos veintisiete'. " \
+    "- Para consultar o cancelar pedidos, SIEMPRE pide DNI o nombre completo para verificar identidad. " \
+    "- Para consultar, cancelar o modificar citas, SIEMPRE pide nombre del paciente para verificar identidad. " \
+    "- Al final de cada respuesta, incluye [FINAL] para indicar que la respuesta está completa. " \
 
   DEFAULT_AUDIO_INPUT_CONFIG = {
         "mediaType":"audio/lpcm",
@@ -43,7 +50,7 @@ class S2sEvent:
               {
                   "toolSpec": {
                       "name": "consultarOrder",
-                      "description": "Consultar el estado y detalles de un pedido por ID",
+                      "description": "Consultar el estado y detalles de un pedido por ID. Se requiere verificación de identidad con DNI o nombre completo.",
                       "inputSchema": {
                           "json": '''{
                             "$schema": "http://json-schema.org/draft-07/schema#",
@@ -52,9 +59,21 @@ class S2sEvent:
                                 "orderId": {
                                     "type": "string",
                                     "description": "ID del pedido a consultar"
+                                },
+                                "dni": {
+                                    "type": "string",
+                                    "description": "Número de DNI del titular del pedido"
+                                },
+                                "customerName": {
+                                    "type": "string",
+                                    "description": "Nombre completo del titular del pedido"
                                 }
                             },
-                            "required": ["orderId"]
+                            "required": ["orderId"],
+                            "anyOf": [
+                                {"required": ["dni"]},
+                                {"required": ["customerName"]}
+                            ]
                         }'''
                       }
                   }
@@ -62,7 +81,7 @@ class S2sEvent:
               {
                   "toolSpec": {
                       "name": "cancelarOrder",
-                      "description": "Cancelar un pedido existente por ID",
+                      "description": "Cancelar un pedido existente por ID. Se requiere verificación de identidad con DNI o nombre completo.",
                       "inputSchema": {
                           "json": '''{
                             "$schema": "http://json-schema.org/draft-07/schema#",
@@ -71,9 +90,21 @@ class S2sEvent:
                                 "orderId": {
                                     "type": "string",
                                     "description": "ID del pedido a cancelar"
+                                },
+                                "dni": {
+                                    "type": "string",
+                                    "description": "Número de DNI del titular del pedido"
+                                },
+                                "customerName": {
+                                    "type": "string",
+                                    "description": "Nombre completo del titular del pedido"
                                 }
                             },
-                            "required": ["orderId"]
+                            "required": ["orderId"],
+                            "anyOf": [
+                                {"required": ["dni"]},
+                                {"required": ["customerName"]}
+                            ]
                         }'''
                       }
                   }
@@ -160,7 +191,7 @@ class S2sEvent:
               {
                   "toolSpec": {
                       "name": "cancelarTurno",
-                      "description": "Cancelar una cita médica existente",
+                      "description": "Cancelar una cita médica existente. Se requiere verificación de identidad con nombre del paciente.",
                       "inputSchema": {
                           "json": '''{
                             "$schema": "http://json-schema.org/draft-07/schema#",
@@ -169,9 +200,13 @@ class S2sEvent:
                                 "appointmentId": {
                                     "type": "string",
                                     "description": "ID de la cita a cancelar"
+                                },
+                                "patientName": {
+                                    "type": "string",
+                                    "description": "Nombre completo del paciente"
                                 }
                             },
-                            "required": ["appointmentId"]
+                            "required": ["appointmentId", "patientName"]
                         }'''
                       }
                   }
@@ -179,7 +214,7 @@ class S2sEvent:
               {
                   "toolSpec": {
                       "name": "modificarTurno",
-                      "description": "Modificar la fecha u hora de una cita médica",
+                      "description": "Modificar la fecha u hora de una cita médica. Se requiere verificación de identidad con nombre del paciente.",
                       "inputSchema": {
                           "json": '''{
                             "$schema": "http://json-schema.org/draft-07/schema#",
@@ -188,6 +223,10 @@ class S2sEvent:
                                 "appointmentId": {
                                     "type": "string",
                                     "description": "ID de la cita a modificar"
+                                },
+                                "patientName": {
+                                    "type": "string",
+                                    "description": "Nombre completo del paciente"
                                 },
                                 "newDate": {
                                     "type": "string",
@@ -198,7 +237,7 @@ class S2sEvent:
                                     "description": "Nueva hora (opcional)"
                                 }
                             },
-                            "required": ["appointmentId"]
+                            "required": ["appointmentId", "patientName"]
                         }'''
                       }
                   }
@@ -206,7 +245,7 @@ class S2sEvent:
               {
                   "toolSpec": {
                       "name": "consultarTurno",
-                      "description": "Consultar los detalles de una cita médica",
+                      "description": "Consultar los detalles de una cita médica. Se requiere verificación de identidad con nombre del paciente.",
                       "inputSchema": {
                           "json": '''{
                             "$schema": "http://json-schema.org/draft-07/schema#",
@@ -215,9 +254,13 @@ class S2sEvent:
                                 "appointmentId": {
                                     "type": "string",
                                     "description": "ID de la cita a consultar"
+                                },
+                                "patientName": {
+                                    "type": "string",
+                                    "description": "Nombre completo del paciente"
                                 }
                             },
-                            "required": ["appointmentId"]
+                            "required": ["appointmentId", "patientName"]
                         }'''
                       }
                   }
@@ -232,7 +275,8 @@ class S2sEvent:
   @staticmethod
   def prompt_start(prompt_name, 
                    audio_output_config=DEFAULT_AUDIO_OUTPUT_CONFIG, 
-                   tool_config=DEFAULT_TOOL_CONFIG):
+                   tool_config=DEFAULT_TOOL_CONFIG,
+                   inference_config=DEFAULT_INFER_CONFIG):
     return {
           "event": {
             "promptStart": {
@@ -244,7 +288,8 @@ class S2sEvent:
               "toolUseOutputConfiguration": {
                 "mediaType": "application/json"
               },
-              "toolConfiguration": tool_config
+              "toolConfiguration": tool_config,
+              "inferenceConfiguration": inference_config
             }
           }
         }

@@ -47,6 +47,11 @@ class S2sSessionManager:
         self.toolUseId = ""
         self.toolName = ""
         
+        # Time tracking for stuck stream detection
+        self.last_response_time = time.time()
+        self.last_audio_sent_time = time.time()
+        self.is_processing_response = False  # Track if we're in the middle of a response
+        
         # Carlos's tool processor
         self.tool_processor = NovaSonicToolProcessor()
 
@@ -128,9 +133,9 @@ class S2sSessionManager:
             try:
                 # Get audio data from the queue with timeout
                 try:
-                    data = await asyncio.wait_for(self.audio_input_queue.get(), timeout=5.0)
+                    data = await asyncio.wait_for(self.audio_input_queue.get(), timeout=2.0)
                 except asyncio.TimeoutError:
-                    # No audio data for 5 seconds, check if still active
+                    # No audio data for 2 seconds, check if still active
                     if not self.is_active:
                         break
                     continue
@@ -149,6 +154,11 @@ class S2sSessionManager:
                 
                 # Send the event
                 await self.send_raw_event(audio_event)
+                print(f"🎤 Audio sent to Bedrock at {time.strftime('%H:%M:%S')}")
+                print(f"📊 Audio chunk size: {len(audio_bytes) if isinstance(audio_bytes, str) else len(str(audio_bytes))} chars")
+                
+                # Update audio sent time for timeout tracking
+                self.last_audio_sent_time = time.time()
                 
                 # Reset error counter on successful send
                 consecutive_audio_errors = 0
@@ -173,27 +183,39 @@ class S2sSessionManager:
     def add_audio_chunk(self, prompt_name, content_name, audio_data):
         """Add an audio chunk to the queue."""
         # The audio_data is already a base64 string from the frontend
+        print(f"📥 Audio chunk received from frontend - Prompt: {prompt_name}, Content: {content_name}")
+        print(f"📊 Audio data length: {len(audio_data) if isinstance(audio_data, str) else len(str(audio_data))} chars")
+        
         self.audio_input_queue.put_nowait({
             'prompt_name': prompt_name,
             'content_name': content_name,
             'audio_bytes': audio_data
         })
+        print(f"✅ Audio chunk added to queue. Queue size: {self.audio_input_queue.qsize()}")
     
     async def _process_responses(self):
         """Process incoming responses from Bedrock."""
         consecutive_errors = 0
         max_consecutive_errors = 3
-        retry_delay = 1.0  # Start with 1 second delay
-        last_response_time = time.time()
-        max_no_response_time = 30.0  # 30 seconds without response
+        retry_delay = 0.5  # Start with 0.5 second delay (faster for user)
+        max_no_response_time = 300.0  # 300 seconds without response (user-friendly)
+        max_audio_no_response_time = 300.0  # 300 seconds after audio without response (allow time for processing)
         
         while self.is_active:
             try:
-                # Check for stuck stream (no response for too long)
+                # Check for stuck stream with more intelligent detection
                 current_time = time.time()
-                if current_time - last_response_time > max_no_response_time:
-                    print(f"No response from Bedrock for {max_no_response_time}s, stream may be stuck")
+                
+                # Check general timeout
+                if current_time - self.last_response_time > max_no_response_time:
+                    print(f"⚠️ No response from Bedrock for {max_no_response_time}s - User would be frustrated!")
                     print("Breaking connection to allow reconnection")
+                    break
+                
+                # Check audio-specific timeout (more aggressive)
+                if current_time - self.last_audio_sent_time > max_audio_no_response_time and not self.is_processing_response:
+                    print(f"🚨 Audio sent {max_audio_no_response_time}s ago but no response - User is waiting!")
+                    print("This indicates a stuck stream. Breaking connection immediately...")
                     break
                 
                 if not self.stream:
@@ -205,8 +227,10 @@ class S2sSessionManager:
                 
                 # Reset error counter and retry delay on successful response
                 consecutive_errors = 0
-                retry_delay = 1.0  # Reset delay
-                last_response_time = time.time()  # Update last response time
+                retry_delay = 0.5  # Reset delay (faster for user)
+                self.last_response_time = time.time()  # Update last response time
+                self.is_processing_response = True  # Mark that we're processing a response
+                print(f"✅ Response received from Bedrock at {time.strftime('%H:%M:%S')}")
                 
                 if result.value and result.value.bytes_:
                     response_data = result.value.bytes_.decode('utf-8')
@@ -252,6 +276,25 @@ class S2sSessionManager:
                     
                     # Forward all events to the frontend (frontend handles display logic)
                     await self.output_queue.put(json_data)
+                    print(f"📤 Event sent to frontend: {event_name}")
+                    
+                    # Reset processing flag for certain events that indicate completion
+                    if event_name in ['contentEnd', 'audioOutput', 'textOutput']:
+                        self.is_processing_response = False
+                        print(f"🔄 Response processing completed for: {event_name}")
+                        
+                        # If we get a textOutput, consider it a valid response even if speculative
+                        if event_name == 'textOutput':
+                            print(f"📝 Text output received, marking response as complete")
+                            print(f"✅ Ready for next audio input")
+                        
+                        # If we get contentEnd, it means the current prompt is complete
+                        if event_name == 'contentEnd':
+                            print(f"📋 Content ended, ready for new prompt")
+                        
+                        # If we get audioOutput, it means Nova finished speaking
+                        if event_name == 'audioOutput':
+                            print(f"🔊 Audio output completed, ready for next input")
 
 
             except json.JSONDecodeError as ex:
@@ -288,7 +331,7 @@ class S2sSessionManager:
                         break
                     print(f"This is an AWS service error. Waiting {retry_delay}s before retrying...")
                     await asyncio.sleep(retry_delay)
-                    retry_delay = min(retry_delay * 2, 10.0)  # Exponential backoff, max 10s
+                    retry_delay = min(retry_delay * 2, 3.0)  # Exponential backoff, max 3s (user-friendly)
                     continue  # Try to continue for AWS service errors
                 elif "StopAsyncIteration" in error_str or "stream ended" in error_str.lower():
                     print(f"Stream ended normally: {e}")
@@ -372,4 +415,6 @@ class S2sSessionManager:
         self.bedrock_client = None
         self.toolUseContent = ""
         self.toolUseId = ""
-        self.toolName = "" 
+        self.toolName = ""
+        self.last_response_time = time.time()
+        self.last_audio_sent_time = time.time() 
